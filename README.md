@@ -6,17 +6,15 @@ This is the official repository of the paper
 Paper: arXiv link coming soon.
 <!-- Paper: [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX) -->
 
-## Results
+## Model Zoo
 
-Wiki10-31K, best configuration (α = 0.5):
+| Dataset       | P@1   | P@3   | P@5   | Training cost | Checkpoint | Log |
+|---------------|-------|-------|-------|---------------|------------|-----|
+| eurlex-4k     | 88.82 | 75.90 | 62.91 | TBD           | TBD        | TBD |
+| wiki10-31k    | 90.78 | 81.11 | 71.94 | TBD           | TBD        | TBD |
+| amazoncat-13k | 96.81 | 84.31 | 69.11 | TBD           | TBD        | TBD |
 
-| Model          | P@1  | P@3 | P@5 |
-|----------------|------|-----|-----|
-| Ensemble       | 90.4 | —   | —   |
-| Qwen branch    | —    | —   | —   |
-| BERT branch    | —    | —   | —   |
-
-Fill in from `models/<run>/best_metrics.json` after a run.
+<!-- Replace TBD with e.g.  4h (8x4090)  |  [gdrive](URL)  |  [log](logs/wiki10-31k.log) -->
 
 ## Setup
 

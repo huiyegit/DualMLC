@@ -46,9 +46,17 @@ conda activate dualmlc
 pip install -r requirements.txt
 ```
 
-## Data
+## Prepare Data
 
-Expects the PECOS `xmc-base` layout:
+Download the XMC datasets from
+[XR-Transformer](https://github.com/amzn/pecos/tree/mainline/examples/xr-transformer-neurips21)
+and put them in the folder `xmc-base`. These are the same preprocessed datasets
+used by [MatchXML](https://github.com/huiyegit/MatchXML).
+
+Six are available: `eurlex-4k`, `wiki10-31k`, `amazoncat-13k`, `wiki-500k`,
+`amazon-670k`, `amazon-3m`.
+
+Each dataset directory holds:
 
 ```
 xmc-base/wiki10-31k/

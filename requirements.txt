@@ -1,8 +1,10 @@
 # Install torch first, matched to your CUDA version:
 #   https://pytorch.org/get-started/locally/
+# (RTX 4090 is sm_89 — CUDA 11.8 or any 12.x build works.)
 torch>=2.1
-transformers>=4.40        # works with both the 4.x and 5.x APIs
-peft>=0.10
-scipy>=1.10
-numpy>=1.24
+
+transformers>=4.46
+peft>=0.13
+scipy>=1.7
+numpy>=1.21
 safetensors>=0.4

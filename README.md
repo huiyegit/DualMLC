@@ -37,9 +37,17 @@ Fill in from `models/<run>/best_metrics.json` after a run.
 
 ## Setup
 
+These results were produced on 8 × NVIDIA GeForce RTX 4090 (24 GB each, compute
+capability sm_89) with CUDA 11.8.
+
 ```bash
-pip install -r requirements.txt
+conda create -n dualmlc python=3.8 -y
+conda activate dualmlc
+pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118
+pip install transformers==4.46.3 peft==0.13.2 numpy==1.21.2 scipy==1.7.1
 ```
+
+## Data
 
 Expects the PECOS `xmc-base` layout:
 

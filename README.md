@@ -10,7 +10,7 @@ Paper: arXiv link coming soon.
 
 | Dataset       | P@1   | P@3   | P@5   | Training cost | Checkpoint | Log |
 |---------------|-------|-------|-------|---------------|------------|-----|
-| eurlex-4k     | 88.82 | 75.90 | 62.91 | 0.25h(8x4090) | [weight](https://drive.google.com/drive/folders/1REzsEq83Y_V2SS5f0btfweI_biTdTuDi?usp=sharing)        | TBD |
+| eurlex-4k     | 88.82 | 75.90 | 62.91 | 0.25h(8x4090) | [weight](https://drive.google.com/drive/folders/1REzsEq83Y_V2SS5f0btfweI_biTdTuDi?usp=sharing)        | [log](https://drive.google.com/file/d/1N107fEG10HPIK0Cn1Ys5KZGFGWA2Fmwj/view?usp=drive_link) |
 | wiki10-31k    | 90.78 | 81.11 | 71.94 | TBD           | TBD        | TBD |
 | amazoncat-13k | 96.81 | 84.31 | 69.11 | TBD           | TBD        | TBD |
 

@@ -10,8 +10,8 @@ Paper: arXiv link coming soon.
 
 | Dataset       | P@1   | P@3   | P@5   | Training cost | Checkpoint | Log |
 |---------------|-------|-------|-------|---------------|------------|-----|
-| eurlex-4k     | 88.82 | 75.90 | 62.91 | 0.25h(8x4090) | [weight](https://drive.google.com/drive/folders/1REzsEq83Y_V2SS5f0btfweI_biTdTuDi?usp=sharing)        | [log](https://drive.google.com/file/d/1N107fEG10HPIK0Cn1Ys5KZGFGWA2Fmwj/view?usp=drive_link) |
-| wiki10-31k    | 90.78 | 81.11 | 71.94 | TBD           | TBD        | TBD |
+| eurlex-4k     | 88.82 | 75.90 | 62.91 | TBD           | TBD        | TBD |
+| wiki10-31k    | 90.78 | 81.11 | 71.94 | 0.25h(8x4090) | [weight](https://drive.google.com/drive/folders/1REzsEq83Y_V2SS5f0btfweI_biTdTuDi?usp=sharing) | [log](https://drive.google.com/file/d/1N107fEG10HPIK0Cn1Ys5KZGFGWA2Fmwj/view?usp=drive_link) |
 | amazoncat-13k | 96.81 | 84.31 | 69.11 | TBD           | TBD        | TBD |
 
 <!-- Replace TBD with e.g.  4h (8x4090)  |  [gdrive](URL)  |  [log](logs/wiki10-31k.log) -->
@@ -46,18 +46,13 @@ xmc-base/wiki10-31k/
 
 ## Training
 
-Reference run (8 GPUs):
+Wiki10-31K, 8 GPUs:
 
 ```bash
 torchrun --nproc_per_node=8 --master_port=29515 train.py \
+    --data-dir xmc-base/wiki10-31k --model-dir models/wiki10_dual \
     --max-steps 4000 --lr 5e-5 --head-lr 5e-4 --bert-lr 1e-4 --bert-head-lr 2e-3 \
-    --ensemble-alpha 0.5 --model-dir models/wiki10_qwen_bert_dual
-```
-
-Single GPU:
-
-```bash
-python train.py --max-steps 4000 --model-dir models/wiki10_qwen_bert_dual
+    --ensemble-alpha 0.6 --qwen-dropout 0.2
 ```
 
 The checkpoint with the best ensemble P@1 is written to `--model-dir` as training
@@ -73,21 +68,21 @@ so you can see which one is carrying the result.
 Evaluate a checkpoint:
 
 ```bash
-python test.py --ckpt models/wiki10_qwen_bert_dual --data-dir xmc-base/wiki10-31k
+python test.py --ckpt models/wiki10_dual --data-dir xmc-base/wiki10-31k
 ```
 
 Find the best ensemble weight without retraining — every α is scored in a single
 pass over the data:
 
 ```bash
-python test.py --ckpt models/wiki10_qwen_bert_dual --data-dir xmc-base/wiki10-31k \
+python test.py --ckpt models/wiki10_dual --data-dir xmc-base/wiki10-31k \
     --sweep-alpha 0 0.25 0.5 0.75 1.0
 ```
 
 Predict labels for raw documents:
 
 ```bash
-python test.py --ckpt models/wiki10_qwen_bert_dual --no-eval \
+python test.py --ckpt models/wiki10_dual --no-eval \
     --input-file docs.txt --predict-topk 10 --out preds.jsonl \
     --label-file xmc-base/wiki10-31k/output-items.txt
 ```

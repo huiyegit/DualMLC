@@ -1,27 +1,10 @@
 # DualMLC
 
-Dual-encoder co-training for extreme multi-label text classification (XMC).
+This is the official repository of the paper
+**LLM-Enhanced Dual-Branch Learning for Multi-Label Text Classification**.
 
-Two live, jointly-trained branches, each with its own classifier head and its own
-BCE loss. There is no coupling term — the branches only meet at prediction time,
-where their logits are blended:
-
-```
-                    ┌────────────────────────────────────────┐
-  document ──┬─────▶│ Qwen2.5-7B (LoRA)  →  mean-pool        │──▶ head_qwen ──▶ logits_A
-             │      │                    →  mean-of-N reduce │
-             │      └────────────────────────────────────────┘
-             │      ┌────────────────────────────────────────┐
-             └─────▶│ bert-base-uncased (full FT) → CLS pool │──▶ head_bert ──▶ logits_B
-                    └────────────────────────────────────────┘
-
-  loss  = BCE(logits_A, y) + BCE(logits_B, y)
-  score = α · logits_A + (1 − α) · logits_B
-```
-
-Each document is tokenized twice, once per encoder, since the two branches use
-different vocabularies. Only the LoRA adapters, the BERT encoder, and the two
-heads are trained; the 7B base weights stay frozen in bf16.
+Paper: arXiv link coming soon.
+<!-- Paper: [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX) -->
 
 ## Results
 

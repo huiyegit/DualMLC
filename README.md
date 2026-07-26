@@ -43,8 +43,7 @@ capability sm_89) with CUDA 11.8.
 ```bash
 conda create -n dualmlc python=3.8 -y
 conda activate dualmlc
-pip install torch==2.1.2 --index-url https://download.pytorch.org/whl/cu118
-pip install transformers==4.46.3 peft==0.13.2 numpy==1.21.2 scipy==1.7.1
+pip install -r requirements.txt
 ```
 
 ## Data

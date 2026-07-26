@@ -1,0 +1,19 @@
+# checkpoints and data
+models/
+xmc-base/
+*.pt
+*.npz
+*.safetensors
+*.jsonl
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/

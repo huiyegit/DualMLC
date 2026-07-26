@@ -48,13 +48,10 @@ pip install -r requirements.txt
 
 ## Prepare Data
 
-Download the XMC datasets from
+Download the XMC datasets `eurlex-4k`, `wiki10-31k`, `amazoncat-13k` from
+[MatchXML](https://github.com/huiyegit/MatchXML) or
 [XR-Transformer](https://github.com/amzn/pecos/tree/mainline/examples/xr-transformer-neurips21)
-and put them in the folder `xmc-base`. These are the same preprocessed datasets
-used by [MatchXML](https://github.com/huiyegit/MatchXML).
-
-Six are available: `eurlex-4k`, `wiki10-31k`, `amazoncat-13k`, `wiki-500k`,
-`amazon-670k`, `amazon-3m`.
+and put them in the folder `xmc-base`.
 
 Each dataset directory holds:
 

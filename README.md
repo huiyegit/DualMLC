@@ -46,7 +46,7 @@ xmc-base/wiki10-31k/
 
 ## Training
 
-Wiki10-31K, 8 GPUs:
+Wiki10-31K, 8 GPUs. Effective batch size is 16 (2 per GPU × 8 GPUs).
 
 ```bash
 mkdir -p logs

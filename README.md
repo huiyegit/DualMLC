@@ -19,7 +19,7 @@ DualMLC combines Qwen2.5-7B and BERT for extreme multi-label text classification
 
 ## Setup
 
-The reported results were produced using 8 × NVIDIA GeForce RTX 4090 GPUs with CUDA 11.8.
+Results were obtained using 8 × RTX 4090 GPUs with CUDA 11.8.
 
 ```bash
 conda create -n dualmlc python=3.8 -y

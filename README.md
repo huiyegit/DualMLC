@@ -45,10 +45,7 @@ hf download google-bert/bert-base-uncased \
 
 ## Data Preparation
 
-Download `eurlex-4k`, `wiki10-31k`, and `amazoncat-13k` from:
-
-- [MatchXML](https://github.com/huiyegit/MatchXML)
-- [XR-Transformer](https://github.com/amzn/pecos/tree/mainline/examples/xr-transformer-neurips21)
+Download `eurlex-4k`, `wiki10-31k`, and `amazoncat-13k` from [MatchXML](https://github.com/huiyegit/MatchXML) or [XR-Transformer](https://github.com/amzn/pecos/tree/mainline/examples/xr-transformer-neurips21).
 
 Place the datasets under `xmc-base`:
 

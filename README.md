@@ -49,10 +49,13 @@ xmc-base/wiki10-31k/
 Wiki10-31K, 8 GPUs:
 
 ```bash
+mkdir -p logs
 torchrun --nproc_per_node=8 --master_port=29515 train.py \
-    --data-dir xmc-base/wiki10-31k --model-dir models/wiki10_dual \
+    --data-dir xmc-base/wiki10-31k --model-dir models/wiki10_dualmlc \
     --max-steps 4000 --lr 5e-5 --head-lr 5e-4 --bert-lr 1e-4 --bert-head-lr 2e-3 \
-    --ensemble-alpha 0.6 --qwen-dropout 0.2
+    --qwen-layers 4 --bert-layers 4 \
+    --ensemble-alpha 0.6 --qwen-dropout 0.2 --bert-dropout 0.1 \
+    2>&1 | tee logs/wiki10-31k-dualmlc.log
 ```
 
 The checkpoint with the best ensemble P@1 is written to `--model-dir` as training
@@ -68,21 +71,21 @@ so you can see which one is carrying the result.
 Evaluate a checkpoint:
 
 ```bash
-python test.py --ckpt models/wiki10_dual --data-dir xmc-base/wiki10-31k
+python test.py --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k
 ```
 
 Find the best ensemble weight without retraining — every α is scored in a single
 pass over the data:
 
 ```bash
-python test.py --ckpt models/wiki10_dual --data-dir xmc-base/wiki10-31k \
+python test.py --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k \
     --sweep-alpha 0 0.25 0.5 0.75 1.0
 ```
 
 Predict labels for raw documents:
 
 ```bash
-python test.py --ckpt models/wiki10_dual --no-eval \
+python test.py --ckpt models/wiki10_dualmlc --no-eval \
     --input-file docs.txt --predict-topk 10 --out preds.jsonl \
     --label-file xmc-base/wiki10-31k/output-items.txt
 ```

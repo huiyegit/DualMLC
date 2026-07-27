@@ -97,10 +97,10 @@ torchrun --nproc_per_node=8 --master_port=29516 test.py \
     --data-dir xmc-base/wiki10-31k
 ```
 
-Search for the best ensemble weight:
+Search for the best ensemble weight using multiple GPUs:
 
 ```bash
-python test.py \
+torchrun --nproc_per_node=8 --master_port=29517 test.py \
     --ckpt models/wiki10_dualmlc \
     --data-dir xmc-base/wiki10-31k \
     --sweep-alpha 0 0.25 0.5 0.75 1.0

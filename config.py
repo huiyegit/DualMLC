@@ -14,10 +14,10 @@ import argparse
 
 CONFIG = {
     "data_dir": "xmc-base/wiki10-31k",
-    "model_dir": "models/wiki10_qwen_bert_dual",
+    "model_dir": "models/wiki10_dualmlc",
 
     # ---- Qwen (branch A) ----
-    "qwen_name": "Qwen/Qwen2.5-7B",
+    "qwen_name": "models/Qwen2.5-7B",
     "qwen_max_length": 256,
     "qwen_pool": "mean",             # mean | last
     "reduce_factor": 4,              # parameter-free mean-of-N reduce on pooled vec
@@ -27,24 +27,24 @@ CONFIG = {
     "lora_targets": ["q_proj", "k_proj", "v_proj", "o_proj"],
 
     # ---- BERT (branch B) ----
-    "bert_name": "bert-base-uncased",
+    "bert_name": "models/bert-base-uncased",
     "bert_max_length": 256,
     "bert_pool": "cls",              # cls | mean
 
-    "qwen_dropout": 0.1,             # dropout on Qwen pooled vec before its head
+    "qwen_dropout": 0.3,             # dropout on Qwen pooled vec before its head
     "bert_dropout": 0.1,             # dropout on BERT pooled vec before its head
-    "qwen_layers": 1,                # avg last-k hidden-state layers (1 = last only)
-    "bert_layers": 1,
+    "qwen_layers": 4,                # avg last-k hidden-state layers
+    "bert_layers": 4,
 
     # ---- ensemble ----
-    "ensemble_alpha": 0.5,           # weight on Qwen logits at eval; (1-alpha) on BERT
+    "ensemble_alpha": 0.6,           # weight on Qwen logits at eval; (1-alpha) on BERT
 
     # ---- optimisation ----
     "batch_size": 2,                 # per-GPU micro-batch
     "grad_accum": 1,
     "lr": 5e-5,                      # Qwen LoRA
-    "head_lr": 5e-4,                 # Qwen classifier head
     "bert_lr": 1e-4,                 # BERT full fine-tune
+    "head_lr": 5e-4,                 # Qwen classifier head
     "bert_head_lr": 2e-3,            # BERT classifier head (needs a higher LR)
     "weight_decay": 0.01,
     "warmup_steps": 250,

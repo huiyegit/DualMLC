@@ -81,14 +81,6 @@ torchrun --nproc_per_node=8 --master_port=29515 train.py \
 
 ## Evaluation
 
-Single GPU:
-
-```bash
-python test.py \
-    --ckpt models/wiki10_dualmlc \
-    --data-dir xmc-base/wiki10-31k
-```
-
 Multiple GPUs:
 
 ```bash
@@ -97,30 +89,13 @@ torchrun --nproc_per_node=8 --master_port=29516 test.py \
     --data-dir xmc-base/wiki10-31k
 ```
 
-Search for the best ensemble weight using multiple GPUs:
-
-```bash
-torchrun --nproc_per_node=8 --master_port=29517 test.py \
-    --ckpt models/wiki10_dualmlc \
-    --data-dir xmc-base/wiki10-31k \
-    --sweep-alpha 0 0.25 0.5 0.75 1.0
-```
-
-## Prediction
-
-Predict the top 10 labels for raw documents:
+Single GPU:
 
 ```bash
 python test.py \
     --ckpt models/wiki10_dualmlc \
-    --no-eval \
-    --input-file docs.txt \
-    --predict-topk 10 \
-    --out preds.jsonl \
-    --label-file xmc-base/wiki10-31k/output-items.txt
+    --data-dir xmc-base/wiki10-31k
 ```
-
-Each line of `docs.txt` should contain one document.
 
 ## License
 

@@ -2,28 +2,33 @@
 """
 test.py -- inference / evaluation entrypoint for a checkpoint written by train.py.
 
-Evaluate the saved model on a split:
+Single-GPU evaluation:
 
-  python test.py --ckpt models/wiki10_qwen_bert_dual --data-dir xmc-base/wiki10-31k
+  python test.py --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k
+
+Multi-GPU evaluation:
+
+  torchrun --nproc_per_node=8 --master_port=29516 test.py \
+      --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k
 
 Find the best ensemble weight without retraining (single pass over the data):
 
   python test.py --ckpt ... --data-dir ... --sweep-alpha 0 0.25 0.5 0.75 1.0
 
-Predict labels for raw documents:
+Predict labels for raw documents (single process only):
 
   python test.py --ckpt ... --no-eval --text "the quick brown fox ..." --predict-topk 5
   python test.py --ckpt ... --no-eval --input-file docs.txt --out preds.jsonl \
       --label-file xmc-base/wiki10-31k/output-items.txt
-
-Single-process only (no torchrun needed).
 """
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from config import CONFIG, build_test_parser, cfg_from_args
 from data import (DualLabeledDataset, batch_to_device, build_eval_loader,
@@ -35,7 +40,32 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s",
 LOG = logging.getLogger("test")
 
 
-def pick_device(explicit=None):
+def distributed_setup(cli_local_rank=None):
+    """Initialize torch.distributed when launched with torchrun."""
+    rank = int(os.environ.get("RANK", 0))
+    local_rank = int(os.environ.get("LOCAL_RANK", cli_local_rank or 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+    if world_size > 1:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend=backend, init_method="env://")
+
+    return rank, local_rank, world_size
+
+
+def distributed_cleanup():
+    if dist.is_available() and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def pick_device(explicit=None, local_rank=0, world_size=1):
+    """Choose one local GPU per torchrun process, or honor --device otherwise."""
+    if world_size > 1:
+        if torch.cuda.is_available():
+            return torch.device(f"cuda:{local_rank}")
+        return torch.device("cpu")
     if explicit:
         return torch.device(explicit)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -73,7 +103,8 @@ def predict(model, loader, device, alpha, topk, use_amp=True):
     return out
 
 
-def run_eval(model, toks, cfg, arch, device, split, alphas, metrics_out=None):
+def run_eval(model, toks, cfg, arch, device, split, alphas,
+             metrics_out=None, rank=0, world_size=1):
     qtok, btok = toks
     texts_path, labels_path = split_paths(cfg["data_dir"], split)
     for p in (texts_path, labels_path):
@@ -86,23 +117,35 @@ def run_eval(model, toks, cfg, arch, device, split, alphas, metrics_out=None):
     if ds.num_labels != arch["num_labels"]:
         raise ValueError(f"label-space mismatch: checkpoint has {arch['num_labels']} "
                          f"labels, {labels_path} has {ds.num_labels}")
-    LOG.info("eval on %s: %d docs, %d labels", split, len(ds), ds.num_labels)
 
-    loader = build_eval_loader(ds, cfg, rank=0, world_size=1)
+    if rank == 0:
+        LOG.info("eval on %s: %d docs, %d labels, %d process(es)",
+                 split, len(ds), ds.num_labels, world_size)
+
+    # build_eval_loader partitions the dataset exactly across ranks.
+    loader = build_eval_loader(ds, cfg, rank=rank, world_size=world_size)
     metrics = evaluate(model, loader, device, alphas, cfg["topk"],
-                       use_amp=cfg["use_amp"], reduce_ddp=False)
-    print(format_metrics(f"{split}", metrics, cfg["topk"]))
+                       use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
 
-    if metrics_out:
-        payload = {
-            "ckpt": str(cfg.get("_ckpt", "")),
-            "split": split,
-            "num_docs": len(ds),
-            "alphas": alphas if isinstance(alphas, list) else [alphas],
-            "metrics": {n: {f"P@{k}": v for k, v in m.items()} for n, m in metrics.items()},
-        }
-        Path(metrics_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        LOG.info("wrote metrics to %s", metrics_out)
+    if rank == 0:
+        print(format_metrics(f"{split}", metrics, cfg["topk"]))
+
+        if metrics_out:
+            payload = {
+                "ckpt": str(cfg.get("_ckpt", "")),
+                "split": split,
+                "num_docs": len(ds),
+                "world_size": world_size,
+                "alphas": alphas if isinstance(alphas, list) else [alphas],
+                "metrics": {
+                    n: {f"P@{k}": v for k, v in m.items()}
+                    for n, m in metrics.items()
+                },
+            }
+            Path(metrics_out).write_text(
+                json.dumps(payload, indent=2), encoding="utf-8")
+            LOG.info("wrote metrics to %s", metrics_out)
+
     return metrics
 
 
@@ -136,39 +179,70 @@ def run_predict(model, toks, cfg, arch, device, texts, topk, alpha,
 
 
 def main():
-    args = build_test_parser().parse_args()
-    device = pick_device(args.device)
+    parser = build_test_parser()
+    # Accept both spellings for compatibility with torchrun/PyTorch versions.
+    parser.add_argument("--local-rank", "--local_rank", type=int, default=None)
+    args = parser.parse_args()
+    rank, local_rank, world_size = distributed_setup(args.local_rank)
 
-    LOG.info("loading checkpoint %s onto %s", args.ckpt, device)
-    model, qtok, btok, arch = load_checkpoint(
-        args.ckpt, device=device, qwen_name=args.qwen_name, merge_lora=args.merge_lora)
-    toks = (qtok, btok)
+    try:
+        if rank != 0:
+            logging.getLogger().setLevel(logging.WARNING)
 
-    # checkpoint arch is the base; CLI flags that were actually passed win
-    cfg = dict(CONFIG)
-    cfg.update({k: v for k, v in arch.items() if k in cfg})
-    cfg = cfg_from_args(args, cfg)
-    cfg["_ckpt"] = args.ckpt
-    alpha = cfg["ensemble_alpha"]
-    LOG.info("num_labels %d | qwen_max %d | bert_max %d | alpha %.3f | amp %s",
-             arch["num_labels"], cfg["qwen_max_length"], cfg["bert_max_length"],
-             alpha, cfg["use_amp"])
+        if world_size > 1 and args.device and rank == 0:
+            LOG.warning("--device is ignored under torchrun; each process uses its LOCAL_RANK")
 
-    texts = list(args.text) if args.text else []
-    if args.input_file:
-        texts += read_texts(args.input_file)
+        device = pick_device(args.device, local_rank=local_rank, world_size=world_size)
 
-    if not args.no_eval:
-        alphas = args.sweep_alpha if args.sweep_alpha else alpha
-        run_eval(model, toks, cfg, arch, device, args.split, alphas, args.metrics_out)
+        if rank == 0:
+            LOG.info("loading checkpoint %s on %d process(es)", args.ckpt, world_size)
+        model, qtok, btok, arch = load_checkpoint(
+            args.ckpt, device=device, qwen_name=args.qwen_name,
+            merge_lora=args.merge_lora)
+        toks = (qtok, btok)
 
-    if texts:
-        run_predict(model, toks, cfg, arch, device, texts, args.predict_topk, alpha,
-                    label_file=args.label_file, out=args.out)
-    elif args.no_eval:
-        LOG.error("nothing to do: --no-eval was set but no --text/--input-file was given")
-        return 2
-    return 0
+        # Checkpoint architecture is the base; explicitly passed CLI flags win.
+        cfg = dict(CONFIG)
+        cfg.update({k: v for k, v in arch.items() if k in cfg})
+        cfg = cfg_from_args(args, cfg)
+        cfg["_ckpt"] = args.ckpt
+        alpha = cfg["ensemble_alpha"]
+
+        if rank == 0:
+            LOG.info("num_labels %d | qwen_max %d | bert_max %d | "
+                     "alpha %.3f | amp %s",
+                     arch["num_labels"], cfg["qwen_max_length"],
+                     cfg["bert_max_length"], alpha, cfg["use_amp"])
+
+        texts = list(args.text) if args.text else []
+        if args.input_file:
+            texts += read_texts(args.input_file)
+
+        if world_size > 1 and texts:
+            if rank == 0:
+                LOG.error("raw-text prediction is single-process only; "
+                          "run it with `python test.py`, not `torchrun`")
+            return 2
+
+        if not args.no_eval:
+            alphas = args.sweep_alpha if args.sweep_alpha else alpha
+            run_eval(model, toks, cfg, arch, device, args.split, alphas,
+                     metrics_out=args.metrics_out, rank=rank,
+                     world_size=world_size)
+
+        if texts:
+            run_predict(model, toks, cfg, arch, device, texts,
+                        args.predict_topk, alpha,
+                        label_file=args.label_file, out=args.out)
+        elif args.no_eval:
+            if rank == 0:
+                LOG.error("nothing to do: --no-eval was set but no "
+                          "--text/--input-file was given")
+            return 2
+
+        return 0
+    finally:
+        distributed_cleanup()
 
 
 if __name__ == "__main__":

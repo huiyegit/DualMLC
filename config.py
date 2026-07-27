@@ -64,6 +64,9 @@ CONFIG = {
     "seed": 42,
     "num_workers": 4,
     "use_amp": True,
+    # Independent dropout masks per rank. The reference runs shared one mask
+    # across ranks; enabling this shifts final P@1 by ~0.15 on Wiki10-31K.
+    "per_rank_dropout": False,
 }
 
 # Everything test.py needs in order to rebuild the model that produced a checkpoint.
@@ -141,6 +144,9 @@ def build_train_parser():
     p.add_argument("--seed", type=int, default=CONFIG["seed"])
     p.add_argument("--num-workers", type=int, default=CONFIG["num_workers"])
     p.add_argument("--no-amp", action="store_true", help="disable bf16 autocast")
+    p.add_argument("--per-rank-dropout", action="store_true",
+                   help="use independent dropout masks per rank (off by default, to "
+                        "match the reference runs)")
     p.add_argument("--save-last", action="store_true",
                    help="also write a resumable last_state.pt (weights + optimizer + "
                         "scheduler) every --save-steps")

@@ -135,9 +135,12 @@ def train(cfg, resume=None, save_last=False):
     torch.manual_seed(cfg["seed"])          # identical init on every rank
     np.random.seed(cfg["seed"])
     model = build_model(cfg, trn.num_labels, lora_cfg=build_lora_config(cfg)).to(device)
-    # Diverge the RNG afterwards so dropout masks differ per rank.
-    torch.manual_seed(cfg["seed"] + 1000 * rank)
-    np.random.seed(cfg["seed"] + 1000 * rank)
+    if cfg["per_rank_dropout"]:
+        # Independent dropout masks per rank (conventional). Note this lowers
+        # gradient variance vs. sharing one mask across ranks, which measurably
+        # shifts final P@1 on Wiki10-31K -- keep it off to match the reference runs.
+        torch.manual_seed(cfg["seed"] + 1000 * rank)
+        np.random.seed(cfg["seed"] + 1000 * rank)
 
     if world_size > 1:
         # broadcast_buffers=False: every buffer here (rotary inv_freq, BERT

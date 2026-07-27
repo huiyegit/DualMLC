@@ -5,7 +5,6 @@ Official implementation of: **LLM-Enhanced Dual-Branch Learning for Multi-Label 
 Paper: arXiv link coming soon.  
 <!-- Paper: [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX) -->
 
-DualMLC combines Qwen2.5-7B and BERT for extreme multi-label text classification.
 
 ## Model Zoo
 

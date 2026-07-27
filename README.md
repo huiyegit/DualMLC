@@ -1,8 +1,6 @@
 # DualMLC
 
-Official implementation of:
-
-**LLM-Enhanced Dual-Branch Learning for Multi-Label Text Classification**
+Official implementation of: **LLM-Enhanced Dual-Branch Learning for Multi-Label Text Classification**
 
 Paper: arXiv link coming soon.  
 <!-- Paper: [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX) -->

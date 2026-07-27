@@ -81,8 +81,18 @@ torchrun --nproc_per_node=8 --master_port=29515 train.py \
 
 ## Evaluation
 
+Single GPU:
+
 ```bash
 python test.py \
+    --ckpt models/wiki10_dualmlc \
+    --data-dir xmc-base/wiki10-31k
+```
+
+Multiple GPUs:
+
+```bash
+torchrun --nproc_per_node=8 --master_port=29516 test.py \
     --ckpt models/wiki10_dualmlc \
     --data-dir xmc-base/wiki10-31k
 ```

@@ -10,7 +10,7 @@ Paper: arXiv link coming soon.
 
 | Dataset | P@1 | P@3 | P@5 | Training Cost | Checkpoint | Log |
 |---|---:|---:|---:|---|---|---|
-| EUR-Lex-4K | 88.82 | 75.90 | 62.91 | TBD | TBD | TBD |
+| EUR-Lex-4K | 88.82 | 75.80 | 62.74 | 0.45 h (8 × RTX 4090) | [Weights](https://drive.google.com/drive/folders/17UoVMKI6G4sm-9cib9kjghfMmSGBDNUp?usp=drive_link) | [Log](https://drive.google.com/file/d/1MRVv9sjIFRfK9TS4j-kax51ZVESt2QB1/view?usp=drive_link) |
 | Wiki10-31K | 90.78 | 81.11 | 71.94 | 0.25 h (8 × RTX 4090) | [Weights](https://drive.google.com/drive/folders/1REzsEq83Y_V2SS5f0btfweI_biTdTuDi?usp=sharing) | [Log](https://drive.google.com/file/d/1N107fEG10HPIK0Cn1Ys5KZGFGWA2Fmwj/view?usp=drive_link) |
 | AmazonCat-13K | 96.81 | 84.31 | 69.11 | TBD | TBD | TBD |
 

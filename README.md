@@ -79,6 +79,27 @@ torchrun --nproc_per_node=8 --master_port=29515 train.py \
     2>&1 | tee logs/wiki10-31k-dualmlc.log
 ```
 
+Train DualMLC on EUR-Lex-4K using eight GPUs:
+
+```bash
+torchrun --nproc_per_node=8 --master_port=29515 train.py \
+    --data-dir xmc-base/eurlex-4k \
+    --model-dir models/eurlex_dualmlc \
+    --qwen-name models/Qwen2.5-7B \
+    --bert-name models/bert-base-uncased \
+    --max-steps 8000 \
+    --lr 5e-5 \
+    --bert-lr 1e-4 \
+    --head-lr 1e-3 \
+    --bert-head-lr 2e-3 \
+    --qwen-layers 1 \
+    --bert-layers 1 \
+    --qwen-dropout 0.4 \
+    --bert-dropout 0.4 \
+    --ensemble-alpha 0.6 \
+    2>&1 | tee logs/eurlex-4k-dualmlc.log
+```
+
 ## Evaluation
 
 Multiple GPUs:

@@ -100,6 +100,31 @@ torchrun --nproc_per_node=8 --master_port=29515 train.py \
     2>&1 | tee logs/eurlex-4k-dualmlc.log
 ```
 
+
+Train DualMLC on AmazonCat-13K using eight GPUs:
+
+```bash
+torchrun --nproc_per_node=8 --master_port=29515 train.py \
+    --data-dir xmc-base/amazoncat-13k \
+    --model-dir models/amazoncat_dualmlc \
+    --qwen-name models/Qwen2.5-7B \
+    --bert-name models/bert-base-uncased \
+    --max-steps 400000 \
+    --logging-steps 500 \
+    --eval-steps 50000 \
+    --save-steps 100000 \
+    --lr 5e-5 \
+    --bert-lr 1e-4 \
+    --head-lr 1e-3 \
+    --bert-head-lr 2e-3 \
+    --qwen-layers 4 \
+    --bert-layers 4 \
+    --ensemble-alpha 0.6 \
+    --qwen-dropout 0.3 \
+    --bert-dropout 0.1 \
+    2>&1 | tee logs/amazoncat-13k-dualmlc.log
+```
+
 ## Evaluation
 
 Multiple GPUs:

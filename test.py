@@ -1,25 +1,6 @@
 #!/usr/bin/env python
 """
-test.py -- inference / evaluation entrypoint for a checkpoint written by train.py.
-
-Single-GPU evaluation:
-
-  python test.py --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k
-
-Multi-GPU evaluation:
-
-  torchrun --nproc_per_node=8 --master_port=29516 test.py \
-      --ckpt models/wiki10_dualmlc --data-dir xmc-base/wiki10-31k
-
-Find the best ensemble weight without retraining (single pass over the data):
-
-  python test.py --ckpt ... --data-dir ... --sweep-alpha 0 0.25 0.5 0.75 1.0
-
-Predict labels for raw documents (single process only):
-
-  python test.py --ckpt ... --no-eval --text "the quick brown fox ..." --predict-topk 5
-  python test.py --ckpt ... --no-eval --input-file docs.txt --out preds.jsonl \
-      --label-file xmc-base/wiki10-31k/output-items.txt
+test.py -- inference / evaluation .
 """
 import json
 import logging

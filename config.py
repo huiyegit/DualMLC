@@ -1,14 +1,6 @@
 #!/usr/bin/env python
 """
-config.py -- single source of truth for defaults and CLI parsing.
-
-CONFIG holds every tunable used by train.py / test.py.
-
-ARCH_KEYS is the subset that must be written next to a checkpoint (as
-``config.json``) so that test.py can rebuild the exact same architecture without
-the caller having to remember which flags the training run used. The original
-single-file script saved only step/alpha/metrics, which made a saved checkpoint
-un-loadable without guessing.
+config.py.
 """
 import argparse
 

@@ -1,18 +1,6 @@
 #!/usr/bin/env python
 """
-train.py -- dual-encoder co-training entrypoint.
-
-Two live, jointly-trained branches, each with its own classifier head and BCE
-loss. Total loss = BCE_qwen + BCE_bert (no coupling term).
-
-Best known config (Wiki10-31K, ENS P@1 ~90.4):
-
-  torchrun --nproc_per_node=8 --master_port=29515 train.py \
-      --max-steps 4000 --lr 5e-5 --head-lr 5e-4 --bert-lr 1e-4 --bert-head-lr 2e-3 \
-      --ensemble-alpha 0.5 --model-dir models/wiki10_qwen_bert_dual
-
-Single GPU:  python train.py --max-steps 4000
-Resume:      ... --save-last --resume auto
+train.py -- dual-encoder co-training.
 """
 import logging
 import os

@@ -1,7 +1,5 @@
 #!/usr/bin/env python
-"""
-test.py -- inference / evaluation .
-"""
+"""Single-encoder distributed evaluation and single-process prediction."""
 import json
 import logging
 import os
@@ -12,8 +10,8 @@ import torch
 import torch.distributed as dist
 
 from config import CONFIG, build_test_parser, cfg_from_args
-from data import (DualLabeledDataset, batch_to_device, build_eval_loader,
-                  build_predict_loader, read_texts, split_paths)
+from data import (SingleLabeledDataset, batch_to_device, build_eval_loader,
+                  build_predict_loader, max_length, read_texts, split_paths)
 from model import evaluate, format_metrics, load_checkpoint
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s",
@@ -22,17 +20,14 @@ LOG = logging.getLogger("test")
 
 
 def distributed_setup(cli_local_rank=None):
-    """Initialize torch.distributed when launched with torchrun."""
     rank = int(os.environ.get("RANK", 0))
     local_rank = int(os.environ.get("LOCAL_RANK", cli_local_rank or 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
-
     if world_size > 1:
         backend = "nccl" if torch.cuda.is_available() else "gloo"
         if torch.cuda.is_available():
             torch.cuda.set_device(local_rank)
         dist.init_process_group(backend=backend, init_method="env://")
-
     return rank, local_rank, world_size
 
 
@@ -42,185 +37,131 @@ def distributed_cleanup():
 
 
 def pick_device(explicit=None, local_rank=0, world_size=1):
-    """Choose one local GPU per torchrun process, or honor --device otherwise."""
     if world_size > 1:
-        if torch.cuda.is_available():
-            return torch.device(f"cuda:{local_rank}")
-        return torch.device("cpu")
+        return torch.device("cuda:%d" % local_rank if torch.cuda.is_available() else "cpu")
     if explicit:
         return torch.device(explicit)
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_label_names(path, num_labels):
-    names = read_texts(path)
-    if len(names) != num_labels:
-        LOG.warning("--label-file has %d lines but the model has %d labels; "
-                    "indices beyond the file will be reported as raw ints",
-                    len(names), num_labels)
-    return names
-
-
 @torch.no_grad()
-def predict(model, loader, device, alpha, topk, use_amp=True):
-    """Top-k label indices + scores per document, in input order."""
+def predict(model, loader, device, topk, use_amp=True):
     amp_on = bool(use_amp) and device.type == "cuda"
-    out = []
+    rows = []
     for batch in loader:
-        kw = batch_to_device(batch, device)
+        kwargs = batch_to_device(batch, device)
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_on):
-            logits_q, logits_b = model(**kw)
-        logits_q = logits_q.float()
-        logits_b = logits_b.float()
-        ens = alpha * logits_q + (1.0 - alpha) * logits_b
-        k = min(int(topk), ens.size(-1))
-        vals, idx = ens.topk(k, dim=-1)
+            logits = model(**kwargs).float()
+        k = min(int(topk), logits.size(-1))
+        vals, idx = logits.topk(k, dim=-1)
         probs = torch.sigmoid(vals)
         for row in range(idx.size(0)):
-            out.append([
+            rows.append([
                 {"label_id": int(i), "logit": float(v), "score": float(p)}
                 for i, v, p in zip(idx[row].tolist(), vals[row].tolist(), probs[row].tolist())
             ])
-    return out
+    return rows
 
 
-def run_eval(model, toks, cfg, arch, device, split, alphas,
+def run_eval(model, tokenizer, cfg, arch, device, split,
              metrics_out=None, rank=0, world_size=1):
-    qtok, btok = toks
     texts_path, labels_path = split_paths(cfg["data_dir"], split)
-    for p in (texts_path, labels_path):
-        if not Path(p).exists():
-            raise FileNotFoundError(
-                f"{p} not found -- point --data-dir at the xmc-base dataset dir "
-                f"(or pass --no-eval to only run prediction)")
-    ds = DualLabeledDataset(texts_path, labels_path, qtok, btok,
-                            cfg["qwen_max_length"], cfg["bert_max_length"])
+    for path in (texts_path, labels_path):
+        if not Path(path).exists():
+            raise FileNotFoundError(path)
+    ds = SingleLabeledDataset(texts_path, labels_path, tokenizer, max_length(cfg))
     if ds.num_labels != arch["num_labels"]:
-        raise ValueError(f"label-space mismatch: checkpoint has {arch['num_labels']} "
-                         f"labels, {labels_path} has {ds.num_labels}")
-
+        raise ValueError("label-space mismatch: checkpoint has %d labels, data has %d" %
+                         (arch["num_labels"], ds.num_labels))
     if rank == 0:
         LOG.info("eval on %s: %d docs, %d labels, %d process(es)",
                  split, len(ds), ds.num_labels, world_size)
-
-    # build_eval_loader partitions the dataset exactly across ranks.
     loader = build_eval_loader(ds, cfg, rank=rank, world_size=world_size)
-    metrics = evaluate(model, loader, device, alphas, cfg["topk"],
+    metrics = evaluate(model, loader, device, cfg["topk"],
                        use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
-
     if rank == 0:
-        print(format_metrics(f"{split}", metrics, cfg["topk"]))
-
+        print(format_metrics(split, metrics, cfg["topk"]))
         if metrics_out:
             payload = {
                 "ckpt": str(cfg.get("_ckpt", "")),
                 "split": split,
                 "num_docs": len(ds),
                 "world_size": world_size,
-                "alphas": alphas if isinstance(alphas, list) else [alphas],
-                "metrics": {
-                    n: {f"P@{k}": v for k, v in m.items()}
-                    for n, m in metrics.items()
-                },
+                "metrics": {name: {"P@%d" % k: value for k, value in vals.items()}
+                            for name, vals in metrics.items()},
             }
-            Path(metrics_out).write_text(
-                json.dumps(payload, indent=2), encoding="utf-8")
-            LOG.info("wrote metrics to %s", metrics_out)
-
+            Path(metrics_out).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return metrics
 
 
-def run_predict(model, toks, cfg, arch, device, texts, topk, alpha,
-                label_file=None, out=None):
-    qtok, btok = toks
-    LOG.info("predicting for %d document(s)", len(texts))
-    loader = build_predict_loader(texts, qtok, btok, cfg)
-    preds = predict(model, loader, device, alpha, topk, use_amp=cfg["use_amp"])
+def load_label_names(path, num_labels):
+    names = read_texts(path)
+    if len(names) != num_labels:
+        LOG.warning("label file has %d lines but checkpoint has %d labels",
+                    len(names), num_labels)
+    return names
 
+
+def run_predict(model, tokenizer, cfg, arch, device, texts, topk,
+                label_file=None, out=None):
+    loader = build_predict_loader(texts, tokenizer, cfg)
+    preds = predict(model, loader, device, topk, use_amp=cfg["use_amp"])
     names = load_label_names(label_file, arch["num_labels"]) if label_file else None
     if names:
         for row in preds:
             for item in row:
                 if item["label_id"] < len(names):
                     item["label"] = names[item["label_id"]]
-
     if out:
         with open(out, "w", encoding="utf-8") as f:
             for text, row in zip(texts, preds):
                 f.write(json.dumps({"text": text[:500], "predictions": row},
                                    ensure_ascii=False) + "\n")
-        LOG.info("wrote %d predictions to %s", len(preds), out)
     else:
         for i, (text, row) in enumerate(zip(texts, preds)):
-            print(f"\n[{i}] {text[:120]}{'...' if len(text) > 120 else ''}")
+            print("\n[%d] %s" % (i, text[:120]))
             for rank_, item in enumerate(row, 1):
                 label = item.get("label", item["label_id"])
-                print(f"   {rank_:>2}. {label}  (score {item['score']:.4f})")
+                print("   %2d. %s (score %.4f)" % (rank_, label, item["score"]))
     return preds
 
 
 def main():
     parser = build_test_parser()
-    # Accept both spellings for compatibility with torchrun/PyTorch versions.
     parser.add_argument("--local-rank", "--local_rank", type=int, default=None)
     args = parser.parse_args()
     rank, local_rank, world_size = distributed_setup(args.local_rank)
-
     try:
         if rank != 0:
             logging.getLogger().setLevel(logging.WARNING)
-
-        if world_size > 1 and args.device and rank == 0:
-            LOG.warning("--device is ignored under torchrun; each process uses its LOCAL_RANK")
-
-        device = pick_device(args.device, local_rank=local_rank, world_size=world_size)
-
-        if rank == 0:
-            LOG.info("loading checkpoint %s on %d process(es)", args.ckpt, world_size)
-        model, qtok, btok, arch = load_checkpoint(
+        device = pick_device(args.device, local_rank, world_size)
+        model, tokenizer, arch = load_checkpoint(
             args.ckpt, device=device, qwen_name=args.qwen_name,
             merge_lora=args.merge_lora)
-        toks = (qtok, btok)
 
-        # Checkpoint architecture is the base; explicitly passed CLI flags win.
         cfg = dict(CONFIG)
-        cfg.update({k: v for k, v in arch.items() if k in cfg})
+        cfg.update({key: value for key, value in arch.items() if key in cfg})
         cfg = cfg_from_args(args, cfg)
         cfg["_ckpt"] = args.ckpt
-        alpha = cfg["ensemble_alpha"]
-
-        if rank == 0:
-            LOG.info("num_labels %d | qwen_max %d | bert_max %d | "
-                     "alpha %.3f | amp %s",
-                     arch["num_labels"], cfg["qwen_max_length"],
-                     cfg["bert_max_length"], alpha, cfg["use_amp"])
 
         texts = list(args.text) if args.text else []
         if args.input_file:
             texts += read_texts(args.input_file)
-
         if world_size > 1 and texts:
             if rank == 0:
-                LOG.error("raw-text prediction is single-process only; "
-                          "run it with `python test.py`, not `torchrun`")
+                LOG.error("raw-text prediction is single-process only")
             return 2
 
         if not args.no_eval:
-            alphas = args.sweep_alpha if args.sweep_alpha else alpha
-            run_eval(model, toks, cfg, arch, device, args.split, alphas,
-                     metrics_out=args.metrics_out, rank=rank,
-                     world_size=world_size)
-
+            run_eval(model, tokenizer, cfg, arch, device, args.split,
+                     metrics_out=args.metrics_out, rank=rank, world_size=world_size)
         if texts:
-            run_predict(model, toks, cfg, arch, device, texts,
-                        args.predict_topk, alpha,
-                        label_file=args.label_file, out=args.out)
+            run_predict(model, tokenizer, cfg, arch, device, texts,
+                        args.predict_topk, args.label_file, args.out)
         elif args.no_eval:
             if rank == 0:
-                LOG.error("nothing to do: --no-eval was set but no "
-                          "--text/--input-file was given")
+                LOG.error("nothing to do")
             return 2
-
         return 0
     finally:
         distributed_cleanup()

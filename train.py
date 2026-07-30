@@ -1,7 +1,5 @@
 #!/usr/bin/env python
-"""
-train.py -- dual-encoder co-training.
-"""
+"""Distributed single-encoder training entry point."""
 import logging
 import os
 import time
@@ -16,18 +14,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_linear_schedule_with_warmup
 
 from config import build_train_parser, cfg_from_args
-from data import (DualLabeledDataset, build_eval_loader, build_train_loader,
-                  batch_to_device, load_tokenizers, split_paths)
-from model import build_model, build_lora_config, evaluate, format_metrics, save_checkpoint
+from data import (SingleLabeledDataset, batch_to_device, build_eval_loader,
+                  build_train_loader, load_tokenizer, max_length, split_paths)
+from model import build_model, evaluate, format_metrics, save_checkpoint
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s",
                     datefmt="%H:%M:%S", level=logging.INFO)
 LOG = logging.getLogger("train")
-
 LAST_STATE_FILE = "last_state.pt"
-
-
-# ---------------------------------------------------------------- DDP helpers
 
 
 def ddp_setup():
@@ -42,12 +36,12 @@ def ddp_setup():
     return rank, local_rank, world_size
 
 
-def ddp_barrier(world_size):
+def barrier(world_size):
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
 
 
-def ddp_cleanup(world_size):
+def cleanup(world_size):
     if world_size > 1 and dist.is_initialized():
         dist.destroy_process_group()
 
@@ -56,22 +50,18 @@ def is_main(rank):
     return rank == 0
 
 
-def rank0_log(rank, msg):
+def rank0_log(rank, message):
     if is_main(rank):
-        LOG.info(msg)
-
-
-# ---------------------------------------------------------------- resume state
+        LOG.info(message)
 
 
 def save_last_state(path, raw, optimizer, scheduler, step, epoch, best_p1):
-    """Only trainable tensors are stored -- the frozen 7B base would be ~15 GB."""
     payload = {
         "step": step,
         "epoch": epoch,
         "best_p1": best_p1,
-        "trainable": {n: p.detach().cpu()
-                      for n, p in raw.named_parameters() if p.requires_grad},
+        "trainable": {name: param.detach().cpu()
+                      for name, param in raw.named_parameters() if param.requires_grad},
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
     }
@@ -83,88 +73,76 @@ def save_last_state(path, raw, optimizer, scheduler, step, epoch, best_p1):
 
 def load_last_state(path, raw, optimizer, scheduler):
     state = torch.load(str(path), map_location="cpu", weights_only=False)
-    missing, unexpected = raw.load_state_dict(state["trainable"], strict=False)
+    _, unexpected = raw.load_state_dict(state["trainable"], strict=False)
     if unexpected:
-        LOG.warning("resume: %d unexpected keys (first: %s)", len(unexpected), unexpected[0])
+        LOG.warning("resume: %d unexpected keys", len(unexpected))
     optimizer.load_state_dict(state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
     return int(state["step"]), int(state["epoch"]), float(state["best_p1"])
 
 
-# ---------------------------------------------------------------- train
+def optimizer_groups(raw, cfg):
+    if cfg["encoder"] == "qwen":
+        lora = [p for name, p in raw.backbone.named_parameters()
+                if "lora_" in name and p.requires_grad]
+        if not lora:
+            raise RuntimeError("no trainable LoRA parameters found")
+        return [
+            {"params": lora, "lr": cfg["lr"]},
+            {"params": list(raw.head.parameters()), "lr": cfg["head_lr"]},
+        ]
+    return [
+        {"params": list(raw.backbone.parameters()), "lr": cfg["bert_lr"]},
+        {"params": list(raw.head.parameters()), "lr": cfg["bert_head_lr"]},
+    ]
 
 
 def train(cfg, resume=None, save_last=False):
     rank, local_rank, world_size = ddp_setup()
-    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:%d" % local_rank if torch.cuda.is_available() else "cpu")
+    rank0_log(rank, "encoder: %s | world_size: %d | device: %s" %
+              (cfg["encoder"], world_size, device))
+    rank0_log(rank, "per-GPU batch: %d | grad_accum: %d | effective batch: %d" %
+              (cfg["batch_size"], cfg["grad_accum"],
+               cfg["batch_size"] * cfg["grad_accum"] * world_size))
 
-    rank0_log(rank, f"world_size: {world_size}  device: {device}")
-    rank0_log(rank, f"per-GPU micro-batch: {cfg['batch_size']}  grad_accum: {cfg['grad_accum']}"
-                    f"  EFFECTIVE BATCH: "
-                    f"{cfg['batch_size'] * cfg['grad_accum'] * world_size}")
-    rank0_log(rank, f"ensemble_alpha: {cfg['ensemble_alpha']}  "
-                    f"qwen_dropout: {cfg['qwen_dropout']}  bert_dropout: {cfg['bert_dropout']}")
-
-    # ---- data ----
-    qtok, btok = load_tokenizers(cfg["qwen_name"], cfg["bert_name"])
-    rank0_log(rank, "loading datasets...")
-    rank0_log(rank, f"qwen_max {cfg['qwen_max_length']}, bert_max {cfg['bert_max_length']}")
-    trn = DualLabeledDataset(*split_paths(cfg["data_dir"], "trn"), qtok, btok,
-                             cfg["qwen_max_length"], cfg["bert_max_length"])
-    tst = DualLabeledDataset(*split_paths(cfg["data_dir"], "tst"), qtok, btok,
-                             cfg["qwen_max_length"], cfg["bert_max_length"])
-    rank0_log(rank, f"train: {len(trn)} docs, test: {len(tst)} docs, "
-                    f"num_labels: {trn.num_labels}")
+    tokenizer = load_tokenizer(cfg)
+    max_len = max_length(cfg)
+    trn = SingleLabeledDataset(*split_paths(cfg["data_dir"], "trn"),
+                               tokenizer, max_len)
+    tst = SingleLabeledDataset(*split_paths(cfg["data_dir"], "tst"),
+                               tokenizer, max_len)
+    rank0_log(rank, "train: %d docs | test: %d docs | labels: %d" %
+              (len(trn), len(tst), trn.num_labels))
     trn_loader, trn_sampler = build_train_loader(trn, cfg, rank, world_size)
     tst_loader = build_eval_loader(tst, cfg, rank, world_size)
 
-    # ---- model ----
-    rank0_log(rank, "constructing model...")
-    torch.manual_seed(cfg["seed"])          # identical init on every rank
+    torch.manual_seed(cfg["seed"])
     np.random.seed(cfg["seed"])
-    model = build_model(cfg, trn.num_labels, lora_cfg=build_lora_config(cfg)).to(device)
+    model = build_model(cfg, trn.num_labels).to(device)
     if cfg["per_rank_dropout"]:
-        # Independent dropout masks per rank (conventional). Note this lowers
-        # gradient variance vs. sharing one mask across ranks, which measurably
-        # shifts final P@1 on Wiki10-31K -- keep it off to match the reference runs.
         torch.manual_seed(cfg["seed"] + 1000 * rank)
         np.random.seed(cfg["seed"] + 1000 * rank)
 
     if world_size > 1:
-        # broadcast_buffers=False: every buffer here (rotary inv_freq, BERT
-        # position_ids) is deterministic and identical on all ranks, so syncing
-        # them buys nothing and turns any rank-asymmetric forward pass into a
-        # deadlock.
-        ddp_kw = {"find_unused_parameters": False, "broadcast_buffers": False}
+        kwargs = {"find_unused_parameters": False, "broadcast_buffers": False}
         if device.type == "cuda":
-            ddp_kw.update(device_ids=[local_rank], output_device=local_rank)
-        model = DDP(model, **ddp_kw)
+            kwargs.update(device_ids=[local_rank], output_device=local_rank)
+        model = DDP(model, **kwargs)
     raw = model.module if world_size > 1 else model
-    rank0_log(rank, "model on device")
 
     trainable = sum(p.numel() for p in raw.parameters() if p.requires_grad)
     total = sum(p.numel() for p in raw.parameters())
-    rank0_log(rank, f"trainable: {trainable:,} / {total:,} ({100 * trainable / total:.3f}%)")
+    rank0_log(rank, "trainable: %s / %s (%.3f%%)" %
+              (format(trainable, ","), format(total, ","), 100.0 * trainable / total))
 
-    # ---- optimizer: four groups, four learning rates ----
-    qwen_lora = [p for n, p in raw.qwen.named_parameters() if "lora_" in n and p.requires_grad]
-    if not qwen_lora:
-        raise RuntimeError("no trainable LoRA parameters found on the Qwen branch")
-    groups = [
-        {"params": qwen_lora, "lr": cfg["lr"]},
-        {"params": list(raw.bert.parameters()), "lr": cfg["bert_lr"]},
-        {"params": list(raw.head_qwen.parameters()), "lr": cfg["head_lr"]},
-        {"params": list(raw.head_bert.parameters()), "lr": cfg["bert_head_lr"]},
-    ]
-    optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
+    optimizer = torch.optim.AdamW(
+        optimizer_groups(raw, cfg), weight_decay=cfg["weight_decay"])
     scheduler = get_linear_schedule_with_warmup(
         optimizer, cfg["warmup_steps"], cfg["max_steps"])
     loss_fn = nn.BCEWithLogitsLoss(reduction="mean")
     trainable_params = [p for p in raw.parameters() if p.requires_grad]
-    alpha = cfg["ensemble_alpha"]
     amp_on = bool(cfg["use_amp"]) and device.type == "cuda"
-    # No GradScaler: it exists for fp16, and this pipeline is bf16 (Qwen weights
-    # are loaded in bf16), which has fp32's exponent range and needs no scaling.
 
     out_dir = Path(cfg["model_dir"])
     if is_main(rank):
@@ -174,18 +152,18 @@ def train(cfg, resume=None, save_last=False):
     if resume:
         path = out_dir / LAST_STATE_FILE if resume == "auto" else Path(resume)
         if path.exists():
-            step, epoch, best_p1 = load_last_state(path, raw, optimizer, scheduler)
-            rank0_log(rank, f"resumed from {path} at step {step} (best ENS P@1 {best_p1:.2f})")
+            step, epoch, best_p1 = load_last_state(
+                path, raw, optimizer, scheduler)
+            rank0_log(rank, "resumed from %s at step %d" % (path, step))
         elif resume != "auto":
             raise FileNotFoundError(path)
-        else:
-            rank0_log(rank, f"--resume auto: no {path}, starting fresh")
 
-    micro_step, loss_sum, loss_q_sum, loss_b_sum, loss_n = 0, 0.0, 0.0, 0.0, 0
+    micro_step = 0
+    loss_sum = 0.0
+    loss_n = 0
     t0 = time.time()
-
-    rank0_log(rank, "starting training")
     optimizer.zero_grad(set_to_none=True)
+
     while step < cfg["max_steps"]:
         if trn_sampler is not None:
             trn_sampler.set_epoch(epoch)
@@ -194,26 +172,20 @@ def train(cfg, resume=None, save_last=False):
             if step >= cfg["max_steps"]:
                 break
             model.train()
-            kw = batch_to_device(batch, device)
+            kwargs = batch_to_device(batch, device)
             y = batch["labels"].to(device, non_blocking=True)
-
             is_boundary = ((micro_step + 1) % cfg["grad_accum"] == 0)
             sync_ctx = nullcontext() if (world_size == 1 or is_boundary) else model.no_sync()
             with sync_ctx:
                 with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                                     enabled=amp_on):
-                    logits_q, logits_b = model(**kw)
-                loss_q = loss_fn(logits_q.float(), y)
-                loss_b = loss_fn(logits_b.float(), y)
-                loss = loss_q + loss_b
+                    logits = model(**kwargs)
+                loss = loss_fn(logits.float(), y)
                 (loss / cfg["grad_accum"]).backward()
 
             loss_sum += loss.item()
-            loss_q_sum += loss_q.item()
-            loss_b_sum += loss_b.item()
             loss_n += 1
             micro_step += 1
-
             if micro_step % cfg["grad_accum"] != 0:
                 continue
 
@@ -224,45 +196,41 @@ def train(cfg, resume=None, save_last=False):
             step += 1
 
             if step % cfg["logging_steps"] == 0:
-                n = max(loss_n, 1)
-                rank0_log(rank,
-                          f"step {step}/{cfg['max_steps']} | loss {loss_sum / n:.4f} "
-                          f"| q {loss_q_sum / n:.4f} b {loss_b_sum / n:.4f} "
-                          f"| lr {scheduler.get_last_lr()[0]:.2e} "
-                          f"| elapsed {(time.time() - t0) / 60:.1f}m")
-                loss_sum = loss_q_sum = loss_b_sum = 0.0
+                rank0_log(rank, "step %d/%d | loss %.4f | lr %.2e | elapsed %.1fm" %
+                          (step, cfg["max_steps"], loss_sum / max(loss_n, 1),
+                           scheduler.get_last_lr()[0], (time.time() - t0) / 60.0))
+                loss_sum = 0.0
                 loss_n = 0
 
             if step % cfg["eval_steps"] == 0 or step == cfg["max_steps"]:
-                rank0_log(rank, f"--- eval at step {step} ---")
-                # every rank participates; counts are all_reduced inside
-                m = evaluate(model, tst_loader, device, alpha, cfg["topk"],
-                             use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
+                rank0_log(rank, "--- eval at step %d ---" % step)
+                metrics = evaluate(model, tst_loader, device, cfg["topk"],
+                                   use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
                 if is_main(rank):
-                    LOG.info("\n%s", format_metrics(f"step {step}", m, cfg["topk"]))
-                    if m["ens"][1] > best_p1:
-                        best_p1 = m["ens"][1]
-                        LOG.info("new best ENS P@1=%.2f, saving to %s", best_p1, out_dir)
-                        save_checkpoint(raw, qtok, btok, out_dir, cfg, trn.num_labels,
-                                        metrics=m, step=step, alpha=alpha)
-                ddp_barrier(world_size)
+                    LOG.info("\n%s", format_metrics("step %d" % step, metrics, cfg["topk"]))
+                    p1 = metrics[cfg["encoder"]][1]
+                    if p1 > best_p1:
+                        best_p1 = p1
+                        LOG.info("new best P@1=%.2f, saving to %s", best_p1, out_dir)
+                        save_checkpoint(raw, tokenizer, out_dir, cfg, trn.num_labels,
+                                        metrics=metrics, step=step)
+                barrier(world_size)
 
             if save_last and is_main(rank) and step % cfg["save_steps"] == 0:
-                save_last_state(out_dir / LAST_STATE_FILE, raw, optimizer, scheduler,
-                                step, epoch, best_p1)
-                LOG.info("wrote resumable state at step %d", step)
+                save_last_state(out_dir / LAST_STATE_FILE, raw, optimizer,
+                                scheduler, step, epoch, best_p1)
 
     rank0_log(rank, "=== final eval ===")
-    m = evaluate(model, tst_loader, device, alpha, cfg["topk"],
-                 use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
+    metrics = evaluate(model, tst_loader, device, cfg["topk"],
+                       use_amp=cfg["use_amp"], reduce_ddp=world_size > 1)
     if is_main(rank):
-        LOG.info("\n%s", format_metrics("FINAL", m, cfg["topk"]))
-        LOG.info("best ENS P@1: %.2f  (checkpoint: %s)", best_p1, out_dir)
+        LOG.info("\n%s", format_metrics("FINAL", metrics, cfg["topk"]))
+        LOG.info("best P@1: %.2f (checkpoint: %s)", best_p1, out_dir)
         if save_last:
-            save_last_state(out_dir / LAST_STATE_FILE, raw, optimizer, scheduler,
-                            step, epoch, best_p1)
-    ddp_barrier(world_size)
-    ddp_cleanup(world_size)
+            save_last_state(out_dir / LAST_STATE_FILE, raw, optimizer,
+                            scheduler, step, epoch, best_p1)
+    barrier(world_size)
+    cleanup(world_size)
     return best_p1
 
 

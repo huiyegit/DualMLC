@@ -1,10 +1,5 @@
 #!/usr/bin/env python
-"""
-data.py -- datasets, collation and dataloader construction.
-
-Each document is tokenized TWICE (once per encoder) because the two branches use
-different vocabularies.
-"""
+"""Single-tokenizer datasets, collation, and dataloaders."""
 from pathlib import Path
 
 import scipy.sparse as smat
@@ -14,120 +9,99 @@ from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer
 
 
-# ---------------------------------------------------------------- tokenizers
+def model_name(cfg):
+    return cfg["bert_name"] if cfg["encoder"] == "bert" else cfg["qwen_name"]
 
 
-def load_tokenizers(qwen_name, bert_name):
-    qtok = AutoTokenizer.from_pretrained(str(qwen_name))
-    if qtok.pad_token is None:
-        qtok.pad_token = qtok.eos_token
-    btok = AutoTokenizer.from_pretrained(str(bert_name))
-    return qtok, btok
+def max_length(cfg):
+    return cfg["bert_max_length"] if cfg["encoder"] == "bert" else cfg["qwen_max_length"]
 
 
-def encode_dual(text, qtok, btok, qmax, bmax):
-    qenc = qtok(text, padding="max_length", truncation=True,
-                max_length=qmax, return_tensors="pt")
-    benc = btok(text, padding="max_length", truncation=True,
-                max_length=bmax, return_tensors="pt")
+def load_tokenizer(cfg, source=None):
+    tok = AutoTokenizer.from_pretrained(str(source or model_name(cfg)))
+    if tok.pad_token is None:
+        if tok.eos_token is None:
+            raise ValueError("tokenizer has neither pad_token nor eos_token")
+        tok.pad_token = tok.eos_token
+    return tok
+
+
+def encode_single(text, tokenizer, max_len):
+    enc = tokenizer(text, padding="max_length", truncation=True,
+                    max_length=max_len, return_tensors="pt")
     out = {
-        "q_input_ids": qenc["input_ids"].squeeze(0),
-        "q_attention_mask": qenc["attention_mask"].squeeze(0),
-        "b_input_ids": benc["input_ids"].squeeze(0),
-        "b_attention_mask": benc["attention_mask"].squeeze(0),
+        "input_ids": enc["input_ids"].squeeze(0),
+        "attention_mask": enc["attention_mask"].squeeze(0),
     }
-    if "token_type_ids" in benc:
-        out["b_token_type_ids"] = benc["token_type_ids"].squeeze(0)
+    if "token_type_ids" in enc:
+        out["token_type_ids"] = enc["token_type_ids"].squeeze(0)
     return out
-
-
-# ---------------------------------------------------------------- datasets
 
 
 def split_paths(data_dir, split):
     d = Path(data_dir)
-    return d / f"X.{split}.txt", d / f"Y.{split}.npz"
+    return d / ("X.%s.txt" % split), d / ("Y.%s.npz" % split)
 
 
 def read_texts(path):
     with open(path, encoding="utf-8") as f:
-        return [ln.rstrip("\n") for ln in f]
+        return [line.rstrip("\n") for line in f]
 
 
-class DualLabeledDataset(Dataset):
-    """(text, multi-hot label vector) pairs, tokenized for both encoders."""
-
-    def __init__(self, texts_path, labels_path, qwen_tok, bert_tok,
-                 qwen_max_len, bert_max_len):
+class SingleLabeledDataset(Dataset):
+    def __init__(self, texts_path, labels_path, tokenizer, max_len):
         self.texts = read_texts(texts_path)
         self.Y = smat.load_npz(str(labels_path)).tocsr()
         if len(self.texts) != self.Y.shape[0]:
-            raise ValueError(
-                f"text/label row mismatch: {len(self.texts)} texts vs "
-                f"{self.Y.shape[0]} label rows ({texts_path} / {labels_path})")
+            raise ValueError("text/label row mismatch: %d texts vs %d label rows" %
+                             (len(self.texts), self.Y.shape[0]))
         self.num_labels = int(self.Y.shape[1])
-        self.qtok, self.btok = qwen_tok, bert_tok
-        self.qmax, self.bmax = qwen_max_len, bert_max_len
+        self.tokenizer = tokenizer
+        self.max_len = int(max_len)
 
     def __len__(self):
         return len(self.texts)
 
     def __getitem__(self, idx):
-        out = encode_dual(self.texts[idx], self.qtok, self.btok, self.qmax, self.bmax)
+        out = encode_single(self.texts[idx], self.tokenizer, self.max_len)
         y = torch.zeros(self.num_labels, dtype=torch.float32)
         y[self.Y[idx].indices] = 1.0
         out["labels"] = y
         return out
 
 
-class DualTextDataset(Dataset):
-    """Unlabeled documents, for inference."""
-
-    def __init__(self, texts, qwen_tok, bert_tok, qwen_max_len, bert_max_len):
+class SingleTextDataset(Dataset):
+    def __init__(self, texts, tokenizer, max_len):
         self.texts = list(texts)
-        self.qtok, self.btok = qwen_tok, bert_tok
-        self.qmax, self.bmax = qwen_max_len, bert_max_len
+        self.tokenizer = tokenizer
+        self.max_len = int(max_len)
 
     def __len__(self):
         return len(self.texts)
 
     def __getitem__(self, idx):
-        return encode_dual(self.texts[idx], self.qtok, self.btok, self.qmax, self.bmax)
+        return encode_single(self.texts[idx], self.tokenizer, self.max_len)
 
 
-# Backwards-compatible alias for the original class name.
-Wiki10DualDataset = DualLabeledDataset
+_TENSOR_KEYS = ("input_ids", "attention_mask", "token_type_ids", "labels")
 
 
-# ---------------------------------------------------------------- batching
-
-
-_TENSOR_KEYS = ("q_input_ids", "q_attention_mask", "b_input_ids",
-                "b_attention_mask", "b_token_type_ids", "labels")
-
-
-def dual_collate(batch):
+def single_collate(batch):
     out = {}
     for key in _TENSOR_KEYS:
         if key in batch[0]:
-            out[key] = torch.stack([b[key] for b in batch])
+            out[key] = torch.stack([item[key] for item in batch])
     return out
 
 
 def batch_to_device(batch, device):
-    """Model kwargs only -- 'labels' is deliberately left out."""
-    kw = {
-        "q_input_ids": batch["q_input_ids"].to(device, non_blocking=True),
-        "q_attention_mask": batch["q_attention_mask"].to(device, non_blocking=True),
-        "b_input_ids": batch["b_input_ids"].to(device, non_blocking=True),
-        "b_attention_mask": batch["b_attention_mask"].to(device, non_blocking=True),
+    out = {
+        "input_ids": batch["input_ids"].to(device, non_blocking=True),
+        "attention_mask": batch["attention_mask"].to(device, non_blocking=True),
     }
-    if "b_token_type_ids" in batch:
-        kw["b_token_type_ids"] = batch["b_token_type_ids"].to(device, non_blocking=True)
-    return kw
-
-
-# ---------------------------------------------------------------- loaders
+    if "token_type_ids" in batch:
+        out["token_type_ids"] = batch["token_type_ids"].to(device, non_blocking=True)
+    return out
 
 
 def build_train_loader(dataset, cfg, rank=0, world_size=1):
@@ -136,31 +110,24 @@ def build_train_loader(dataset, cfg, rank=0, world_size=1):
                                      shuffle=True, drop_last=True)
         loader = DataLoader(dataset, batch_size=cfg["batch_size"], sampler=sampler,
                             num_workers=cfg["num_workers"], pin_memory=True,
-                            drop_last=True, collate_fn=dual_collate)
+                            drop_last=True, collate_fn=single_collate)
     else:
         sampler = None
         loader = DataLoader(dataset, batch_size=cfg["batch_size"], shuffle=True,
                             num_workers=cfg["num_workers"], pin_memory=True,
-                            drop_last=True, collate_fn=dual_collate)
+                            drop_last=True, collate_fn=single_collate)
     return loader, sampler
 
 
 def build_eval_loader(dataset, cfg, rank=0, world_size=1):
-    """Shard the eval set across ranks by strided slicing.
-
-    DistributedSampler would pad the last shard by repeating samples, which
-    silently biases the metrics. Strided Subset slicing partitions exactly, so
-    all_reduce-ing the hit counts gives the same number a single-GPU run would.
-    """
     if world_size > 1:
         dataset = Subset(dataset, list(range(rank, len(dataset), world_size)))
     return DataLoader(dataset, batch_size=cfg["eval_batch_size"], shuffle=False,
                       num_workers=cfg["num_workers"], pin_memory=True,
-                      collate_fn=dual_collate)
+                      collate_fn=single_collate)
 
 
-def build_predict_loader(texts, qtok, btok, cfg, num_workers=0):
-    ds = DualTextDataset(texts, qtok, btok,
-                         cfg["qwen_max_length"], cfg["bert_max_length"])
+def build_predict_loader(texts, tokenizer, cfg, num_workers=0):
+    ds = SingleTextDataset(texts, tokenizer, max_length(cfg))
     return DataLoader(ds, batch_size=cfg["eval_batch_size"], shuffle=False,
-                      num_workers=num_workers, collate_fn=dual_collate)
+                      num_workers=num_workers, collate_fn=single_collate)

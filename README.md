@@ -1,9 +1,7 @@
 # DualMLC
 
-Official implementation of: **LLM-Enhanced Dual-Branch Learning for Multi-Label Text Classification**.
+Official implementation of: [**LLM-Enhanced Dual-Branch Learning for Multi-Label Text Classification**.](https://arxiv.org/abs/2609.12915)
 
-Paper: arXiv link coming soon.  
-<!-- Paper: [arXiv:XXXX.XXXXX](https://arxiv.org/abs/XXXX.XXXXX) -->
 
 
 ## Model Zoo
